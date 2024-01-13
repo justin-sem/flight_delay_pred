@@ -1,1 +1,4 @@
 # flight_delay_pred
+
+This is a project in R. 
+Every day, numerous flights experience delays due to a variety of issues, ranging from adverse weather conditions and air traffic congestion to mechanical problems and operational challenges. These delays can lead to significant inconveniences for passengers such as financial losses, operational hurdles for airlines, and even environmental impacts. The main goal of this project is to address the root causes and finding effective solutions is crucial to minimizing the negative effects of flight delays on the aviation industry and travelers. Flights delay can bring unimaginable consequences to the passengers, therefore, it is crucial to minimize the chances of encounter flight delay issue. This project will be performing classification method to find out whether a classification model can predict the flight delay and which model has the best performance.
