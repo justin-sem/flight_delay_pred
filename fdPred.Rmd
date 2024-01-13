@@ -1,0 +1,274 @@
+---
+title: "Predicting Flight Delays"
+author: "Justin Sem"
+date: "2024-1-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library("dplyr")
+library("ggplot2")
+library("corrplot")
+library("caret")
+library("klaR")
+library("randomForest")
+```
+
+
+Every day, numerous flights experience delays due to a variety of issues, ranging from adverse weather conditions and air traffic congestion to mechanical problems and operational challenges. These delays can lead to significant inconveniences for passengers such as financial losses, operational hurdles for airlines, and even environmental impacts. The main goal of this project is to address the root causes and finding effective solutions is crucial to minimizing the negative effects of flight delays on the aviation industry and travelers. Flights delay can bring unimaginable consequences to the passengers, therefore, it is crucial to minimize the chances of encounter flight delay issue. This project will be performing classification method to find out whether a classification model can predict the flight delay and which model has the best performance.
+
+
+The data is collected from: <https://www.kaggle.com/datasets/usdot/flight-delays?select=flights.csv>, by U.S. Department of Transportation's (DOT) Bureau of Transportation Statistics in 2015.
+
+Below display the overall structure and the dimension of the dataset.
+
+```{r}
+# read data
+data <- read.csv("flights.csv")
+
+# view the structure and dimension our data
+str(data)
+dim(data)
+```
+
+## Data Preprocessing
+### Data Cleaning
+First check the number of missing values and the percentage of missing values of each variable
+
+```{r}
+
+# check the number missing value or empty string for each variable
+missing_values_count <- colSums(is.na(data)| data == "") %>% sort(decreasing = TRUE)
+print(missing_values_count)
+
+# check the percentage of missing value for each variable
+missingPerc <- (colSums(is.na(data)| data == "")/dim(data)[1]) %>% sort(decreasing = TRUE)
+missing_perc_percentage <- sprintf("%.2f%%", missingPerc * 100)
+print(cbind(Column = names(missingPerc), Missing_Percentage = missing_perc_percentage))
+
+```
+
+Here are dropping all the variables with large number of missing values (\> 80%).
+
+```{r}
+
+# dropping variables with a large share of missing values (>80%)
+toDrop <- c("AIR_SYSTEM_DELAY", "SECURITY_DELAY", "AIRLINE_DELAY", "LATE_AIRCRAFT_DELAY", "WEATHER_DELAY", "CANCELLATION_REASON")
+data <- data[,-which(names(data) %in% toDrop)]
+
+```
+
+Also dropping irrelevant variables will are determined based on the exploratory data analysis.
+
+```{r}
+
+meaninglessVars <- c("YEAR", "DIVERTED", "CANCELLED", "TAIL_NUMBER","ELAPSED_TIME", "AIR_TIME","WHEELS_ON", "SCHEDULED_TIME", "TAXI_IN", "TAXI_OUT", "SCHEDULED_ARRIVAL", "ARRIVAL_TIME")
+data <- data[,-which(names(data) %in% meaninglessVars)]
+
+head(data)
+```
+
+### Feature Engineering
+Next, will creates a binary variable which tells us whether if the flight is domestic or international. In addition, will creates a variable to categorize the variable 'DAY'. Finally, will be dropping insignificant variables to avoid information duplication and remove observations with missing values.
+```{r}
+# first we define the airports by their abbreviation
+americanAirports <- c("ATL", "ORD", "DFW", "DEN", "LAX", "SFO", "PHX", "IAH", "LAS", "MSP", "MCO", "SEA", "DTW", "BOS", "EWR", "CLT", "LGA", "SLC", "JFK", "BWI", "MDW", "DCA", "FLL", "SAN", "MIA", "PHL", "TPA", "DAL", "HOU", "BNA", "PDX", "STL", "HNL", "OAK", "AUS", "MSY", "MCI", "SJC", "SMF", "SNA", "CLE", "IAD", "RDU", "MKE", "SAT", "RSW", "IND", "SJU", "CMH", "PIT", "PBI", "OGG", "CVG", "ABQ", "BUR", "BDL", "JAX", "ONT", "BUF", "OMA", "OKC", "ANC", "RIC", "TUS", "MEM", "TUL", "RNO", "BHM", "ELP", "CHS", "BOI", "KOA", "PVD", "GRR", "LIH", "LIT", "SDF", "GEG", "ORF", "XNA", "MSN", "PSP", "LGB")
+
+# binary variable which indicates origin of the airport
+data$USA_ORIG <- ifelse(data$ORIGIN_AIRPORT %in% americanAirports, 1, 0)
+# binary variable which indicates destination of the airport
+data$USA_DEST <- ifelse(data$DESTINATION_AIRPORT %in% americanAirports, 1, 0)
+
+# binary variable where domestic flight = 1, else international flight = 0
+data$US_FLIGHT <- ifelse(data$USA_ORIG == 1 & data$USA_DEST == 1, 1, 0)
+
+
+# binary variable that was equal to 1 if the flight flied between the 1st to 15th of a month, else 2.
+data$MONTH_HALF <- ifelse(data$DAY %in% 1:15, 1, 2)
+
+# then we will drop the irrelevant variables to avoid information duplication
+toDrop2 <- c("USA_ORIG", "USA_DEST", "DESTINATION_AIRPORT", "DAY")
+data <- data[,-which(names(data) %in% toDrop2)]
+
+# drop all the observations that had missing values.
+data <- na.omit(data)
+```
+### Format Correction
+
+Here will be converting the categorical variables such as AIRLINE and ORIGIN_AIRPORT to factor and assign an integer value to it.
+```{r}
+
+data$ORIGIN_AIRPORT <- as.integer(factor(data$ORIGIN_AIRPORT))
+data$AIRLINE <- as.integer(factor(data$AIRLINE))
+
+head(data,5)
+```
+### Dependent Variable
+
+Since the objective is predicting the flight delay, therefore, will be using 'DEPARTURE_DELAY' as dependent variable. Will be selecting the observations with departure delay equals to or larger than zero. Below present the summary and plotting of the dependent variable.
+
+```{r}
+summary(data$DEPARTURE_DELAY)
+
+data <- data[data$DEPARTURE_DELAY >= 0,]
+
+ggplot(data, aes(DEPARTURE_DELAY)) + geom_histogram(aes(y=..count..), fill="blue", alpha = 1.0,color="white", bins = 60)+ labs(x = "Departure delay (mins)", y = "Frequency")
+
+```
+
+From the graph above, the distribution of the dependent variable is right-skewed and highly asymmetrical. Therefore, will be using the natural logarithm of the departure delay as dependent variable which can help make the distribution more symmetrical and close to normal distribution. Will also create a column to classify the departure delay. The condition is that if the delay minutes are more than around 12 minutes, will then classify it as delayed. 
+
+Finally, will then remove the 'DEPARTURE_DELAY' column and 'classDelay' will be the dependent variable for classification problem.
+
+```{r}
+data$DEPARTURE_DELAY <- data$DEPARTURE_DELAY + 1
+data$log_DEPARTURE_DELAY <- log(data$DEPARTURE_DELAY)
+
+ggplot(data, aes(log_DEPARTURE_DELAY)) + geom_histogram(aes(y=..count..), fill="blue", alpha = 1.0, color="white", bins = 60) +labs(x = "Departure delay (ln mins)", y = "Frequency")
+
+data <- data[,-which(names(data)=='DEPARTURE_DELAY')]
+data <- data %>% mutate(classDelay = ifelse(log_DEPARTURE_DELAY >= 2.5, 0, 1))
+dim(data)
+```
+### Data Sampling
+
+The cleaned data set consists of 2443491 observations and 14 columns. Due to the limitation of time and computer resources, will perform random sampling method by taking 15000 samples from the data population.
+
+
+```{r}
+set.seed(333)
+sample_size <- 15000
+sampledData <- data[sample(nrow(data), sample_size, replace = FALSE), ]
+dim(sampledData)
+```
+
+## Exploratory Data Analysis
+
+### Summary Statistics
+
+Here present the summary statistics of each variables in the data.
+
+```{r}
+summary(sampledData)
+```
+### Data Visualization
+
+### Histograms
+
+The histogram of DAY_OF_WEEK illustrated that weekend has lower flight delay as compared to the weekdays. Monday, Thursday and Friday have the most number of flight delayed cases. 
+```{r}
+ggplot(sampledData, aes(x = DAY_OF_WEEK, fill = factor(classDelay))) +
+  geom_bar(position = "dodge", stat = "count") +
+  labs(title = "Histogram of DAY_OF_WEEK",
+       x = "DAY_OF_WEEK",
+       y = "Count",
+       fill = "Delay")
+
+```
+
+From the histogram of MONTH below, can clearly view that the number of flights decreased after August, and it also causes the number of flight delays decreases.
+```{r}
+ggplot(sampledData, aes(x = MONTH, fill = factor(classDelay))) +
+  geom_bar(position = "dodge", stat = "count") +
+  labs(title = "Histogram of MONTH",
+       x = "MONTH",
+       y = "Count",
+       fill = "Delay")
+```
+
+From the histogram of AIRLINE, can clearly see that airline 'WN' has the highest number of flights delays case, however it might because it has the highest frequency of the flight.
+```{r}
+ggplot(sampledData, aes(x = AIRLINE, fill = factor(classDelay))) +
+  geom_bar(position = "dodge", stat = "count") +
+  labs(title = "Histogram of AIRLINE",
+       x = "AIRLINE",
+       y = "Count",
+       fill = "Delay")
+```
+
+From the histogram of US_FLIGHT, the domestic flight (labelled 1) has greater number of flight delay compared to international flight.
+```{r}
+ggplot(sampledData, aes(x = factor(US_FLIGHT), fill = factor(classDelay))) +
+  geom_bar(position = "dodge", stat = "count") +
+  labs(title = "Histogram of US_FLIGHT",
+       x = "US_FLIGHT",
+       y = "Count",
+       fill = "Delay") + scale_x_discrete(labels = c("0", "1"))
+```
+
+### Correlation Matrix
+
+The correlation matrix here display the relationship in between the variables. The closer the value (color) to 1 or -1, the higher the correlation in between the variables.
+
+```{r}
+
+# Create a correlation matrix
+cor_matrix <- cor(sampledData)
+corrplot(cor_matrix, tl.col = "black")
+```
+
+## Classfication Modelling
+
+Before the modelling session, will split our data into training and testing set at 0.8 distribution. In addition, since is performing classification, therefore will be dropping the 'log_DEPARTURE_DELAY' column.
+
+
+```{r}
+classiData <- subset(sampledData, select = -c(log_DEPARTURE_DELAY))
+classiData$classDelay <- as.factor(classiData$classDelay)
+
+
+set.seed(333)
+splitIndex <- createDataPartition(classiData$classDelay, p = 0.8, list = FALSE)
+trainingSet <- classiData[splitIndex,]
+testingSet <- classiData[-splitIndex,]
+
+cat("Dimension of training:" ,dim(trainingSet), '\n')
+cat("Dimension of testing:" ,dim(testingSet))
+```
+Here, checking the data balancing in order to ensure the model later does not bias towards any class. Can see that both classes have the distribution proportion close to 0.50.
+
+```{r}
+print("Distribution of classes: ")
+table(trainingSet$classDelay)
+print("Distribution of classes (prop): ")
+prop.table(table(trainingSet$classDelay))
+```
+
+Modelling with **Naive Bayes** classification model.
+
+```{r}
+model1 <- NaiveBayes(classDelay~.,data = trainingSet)
+xTest <- testingSet[,1:12]
+yTest <- testingSet[,13]
+
+predictions <- predict(model1, xTest)
+cm <- confusionMatrix(predictions$class,yTest)
+cm
+
+```
+
+Modelling with **Random Forest** classification model.
+
+```{r}
+model2 <- randomForest(classDelay~., data = trainingSet)
+predictions <- predict(model2, xTest)
+cm <- confusionMatrix(predictions, yTest)
+cm
+```
+Modelling with **k-Nearest Neighbors (kNN)** classification model.
+```{r}
+model3 <- train(classDelay~., data = trainingSet, method = 'knn')
+predictions <- predict(model3, xTest)
+cm <- confusionMatrix(predictions, yTest)
+cm
+```
+
+### Evaluation for Classification Modelling
+
+In the classification modelling session, I utilised three different classification models which are Naive Bayes, Random Forest and k-Nearest Neighbors model to perform prediction on the flights delay. 
+
+Generally, Random Forest classifier has the best performance as it achieved 84.2% of accuracy.The Kappa statistic, which measures the agreement between the model's predictions and the actual outcomes is 68.2 which suggests a substantial level of agreement. The model shows a good sensitivity and specificity which indicating its ability to correctly identify both positive and negative instances.
+
+Whereas, Naive Bayes classifier overall has good accuracy at 78% yet the sensitivity is quite low with only 61.7%. This suggests that the model is better at correctly identifying negative instances than positive ones. Its Kappa statistic at around 55% suggests a moderate level of agreement. Finally, the kNN classfier has the worst performance as compared to the previous models. It achieved 62.3% of accuracy, 53% and 70% of sensitivity and specificity. A value of Kappa statistic around 20% suggests a low level of agreement.Further optimization and refinement may be beneficial in order to enhance the overall performance.
